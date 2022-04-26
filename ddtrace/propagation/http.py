@@ -37,14 +37,12 @@ _HTTP_HEADER_B3_TRACE_ID = "x-b3-traceid"
 _HTTP_HEADER_B3_SPAN_ID = "x-b3-spanid"
 _HTTP_HEADER_B3_SAMPLED = "x-b3-sampled"
 _HTTP_HEADER_B3_FLAGS = "x-b3-flags"
+_HTTP_HEADER_TAGS = "x-datadog-tags"
 
 
 def _possible_header(header):
     # type: (str) -> FrozenSet[str]
     return frozenset([header, get_wsgi_header(header).lower()])
-
-
-HTTP_HEADER_TAGS = "x-datadog-tags"
 
 
 # Note that due to WSGI spec we have to also check for uppercased and prefixed
@@ -53,7 +51,7 @@ POSSIBLE_HTTP_HEADER_TRACE_IDS = _possible_header(HTTP_HEADER_TRACE_ID)
 POSSIBLE_HTTP_HEADER_PARENT_IDS = _possible_header(HTTP_HEADER_PARENT_ID)
 POSSIBLE_HTTP_HEADER_SAMPLING_PRIORITIES = _possible_header(HTTP_HEADER_SAMPLING_PRIORITY)
 POSSIBLE_HTTP_HEADER_ORIGIN = _possible_header(HTTP_HEADER_ORIGIN)
-POSSIBLE_HTTP_HEADER_TAGS = frozenset([HTTP_HEADER_TAGS, get_wsgi_header(HTTP_HEADER_TAGS).lower()])
+POSSIBLE_HTTP_HEADER_TAGS = frozenset([_HTTP_HEADER_TAGS, get_wsgi_header(_HTTP_HEADER_TAGS).lower()])
 _POSSIBLE_HTTP_HEADER_B3_SINGLE_HEADER = _possible_header(_HTTP_HEADER_B3_SINGLE)
 _POSSIBLE_HTTP_HEADER_B3_TRACE_IDS = _possible_header(_HTTP_HEADER_B3_TRACE_ID)
 _POSSIBLE_HTTP_HEADER_B3_SPAN_IDS = _possible_header(_HTTP_HEADER_B3_SPAN_ID)
@@ -103,6 +101,8 @@ class _DatadogMultiHeader:
       - ``x-datadog-origin`` optional name of origin Datadog product which initiated the request
     """
 
+    _PROPAGATED_TAGS = frozenset(["_dd.p.dm", "_dd.propagation_error"])
+
     @staticmethod
     def _inject(span_context, headers):
         # type: (Context, Dict[str, str]) -> None
@@ -120,24 +120,24 @@ class _DatadogMultiHeader:
         if span_context.dd_origin is not None:
             headers[HTTP_HEADER_ORIGIN] = ensure_text(span_context.dd_origin)
 
+        # Skip injecting tracer tags
+        if not config._propagation_datadog_tags_enabled:
+            return
+
         # Do not try to encode tags if we have already tried and received an error
         if "_dd.propagation_error" in span_context._meta:
             return
 
-        # TODO: add whitelist
-        # Only propagate tags that start with `_dd.p.`
-        tags_to_encode = {}  # type: Dict[str, str]
-        for key, value in span_context._meta.items():
-            # DEV: encoding will fail if the key or value are not `str`
-            key = ensure_str(key)
-            if key.startswith("_dd.p."):
-                tags_to_encode[key] = ensure_str(value)
+        # Only propagate tags that are allowed for propagation
+        tags_to_encode = {  # type: Dict[str, str]
+            k: v
+            for k, v in ((ensure_str(k), v) for k, v in span_context._meta.items())
+            if k in _DatadogMultiHeader._PROPAGATED_TAGS
+        }
 
         if tags_to_encode:
-            encoded_tags = None
-
             try:
-                encoded_tags = encode_tagset_values(tags_to_encode)
+                headers[_HTTP_HEADER_TAGS] = encode_tagset_values(tags_to_encode)
             except TagsetMaxSizeError:
                 # We hit the max size allowed, add a tag to the context to indicate this happened
                 span_context._meta["_dd.propagation_error"] = "max_size"
@@ -146,8 +146,6 @@ class _DatadogMultiHeader:
                 # We hit an encoding error, add a tag to the context to indicate this happened
                 span_context._meta["_dd.propagation_error"] = "encoding_error"
                 log.warning("failed to encode x-datadog-tags", exc_info=True)
-            if encoded_tags:
-                headers[HTTP_HEADER_TAGS] = encoded_tags
 
     @staticmethod
     def _extract(headers):
@@ -172,8 +170,9 @@ class _DatadogMultiHeader:
             POSSIBLE_HTTP_HEADER_ORIGIN,
             headers,
         )
+
         meta = None
-        tags_value = HTTPPropagator._extract_header_value(
+        tags_value = _extract_header_value(
             POSSIBLE_HTTP_HEADER_TAGS,
             headers,
             default="",
@@ -182,9 +181,16 @@ class _DatadogMultiHeader:
             # Do not fail if the tags are malformed
             try:
                 # We get a Dict[str, str], but need it to be Dict[Union[str, bytes], str] (e.g. _MetaDictType)
-                meta = cast(Dict[Union[str, bytes], str], decode_tagset_string(tags_value))
+                meta = cast(
+                    Dict[Union[str, bytes], str],
+                    {k: v for (k, v) in decode_tagset_string(tags_value) if k in _DatadogMultiHeader._PROPAGATED_TAGS},
+                )
             except TagsetDecodeError:
                 log.debug("failed to decode x-datadog-tags: %r", tags_value, exc_info=True)
+
+        # Parse tags even if propagation is disabled
+        if not config._propagation_datadog_tags_enabled:
+            meta = None
 
         # Try to parse values into their expected types
         try:

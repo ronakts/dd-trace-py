@@ -193,6 +193,10 @@ class Config(object):
             "DD_TRACE_PROPAGATION_STYLE_INJECT", default=PROPAGATION_STYLE_DATADOG
         )
 
+        # Datadog tracer tags propagation
+        self._propagation_datadog_tags_max_length = int(os.getenv("DD_TRACE_X_DATADOG_TAGS_MAX_LENGTH", default=128))
+        self._propagation_datadog_tags_enabled = self._propagation_datadog_tags_max_length != 0
+
         # Raise certain errors only if in testing raise mode to prevent crashing in production with non-critical errors
         self._raise = asbool(os.getenv("DD_TESTING_RAISE", False))
         self._trace_compute_stats = asbool(os.getenv("DD_TRACE_COMPUTE_STATS", False))

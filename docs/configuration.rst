@@ -134,7 +134,6 @@ below:
 
        .. _dd-trace-writer-max-payload-size-bytes:
    * - ``DD_TRACE_WRITER_MAX_PAYLOAD_SIZE_BYTES``
-     - Int
      - 8388608
      - The max size in bytes of each payload item sent to the trace agent. If the max payload size is greater than buffer size, then max size of each payload item will be the buffer size.
 
@@ -203,6 +202,12 @@ below:
 
        Example: ``DD_TRACE_PROPAGATION_STYLE_INJECT="datadog,b3"`` to inject both ``x-datadog-*`` and ``x-b3-*``
        headers into outbound requests.
+
+       .. _dd-trace-x-datadog-tags-max-length:
+   * - ``DD_TRACE_X_DATADOG_TAGS_MAX_LENGTH``
+     - Integer
+     - 128
+     - If the value is 0, Datadog trace tags propagation is disabled.
 
        .. _dd-profiling-enabled:
    * - ``DD_PROFILING_ENABLED``
