@@ -7,6 +7,7 @@ from typing import Optional
 from ...internal import atexit
 from ...internal import forksafe
 from ...settings import _config as config
+from ...version import get_version
 from ..agent import get_connection
 from ..agent import get_trace_url
 from ..compat import get_connection_response
@@ -19,6 +20,7 @@ from ..service import ServiceStatus
 from ..utils.time import StopWatch
 from .data import get_application
 from .data import get_host_info
+from .metrics import Series
 
 
 log = get_logger(__name__)
@@ -49,6 +51,7 @@ class TelemetryWriter(PeriodicService):
         self._encoder = JSONEncoderV2()
         self._events_queue = []  # type: List[Dict]
         self._integrations_queue = []  # type: List[Dict]
+        self._series_map = {}  # type: Dict[str, Series]
         self._lock = forksafe.Lock()  # type: forksafe.ResetObject
 
         # _sequence is a counter representing the number of requests sent by the writer
@@ -84,6 +87,14 @@ class TelemetryWriter(PeriodicService):
             self._integrations_queue = []
         return integrations
 
+    def _flush_metrics(self):
+        # type () -> List[Dict]
+        """Returns a list of all integrations queued by add_integration"""
+        with self._lock:
+            series = self._series_map
+            self._series_map = []
+        return series
+
     def _flush_events_queue(self):
         # type () -> List[Dict]
         """Returns a list of all integrations queued by classmethods"""
@@ -96,6 +107,10 @@ class TelemetryWriter(PeriodicService):
         integrations = self._flush_integrations_queue()
         if integrations:
             self._app_integrations_changed_event(integrations)
+
+        series = self._flush_metrics()
+        if series:
+            self._app_generate_metrics_event(series)
 
         telemetry_requests = self._flush_events_queue()
 
@@ -125,6 +140,29 @@ class TelemetryWriter(PeriodicService):
         # type: (...) -> None
         super(TelemetryWriter, self)._stop_service()
         self.join()
+
+    def add_count_metric(self, name, value, tags=None):
+        # type: (str, int, Optional[dict]) -> None
+        """
+        Queues count metric
+        """
+        with self._lock:
+            if name not in self._series_map:
+                self._series_map[name] = Series(name)
+
+            self._series_map[name].add_point(value)
+            if tags:
+                self._series_map[name].set_tags(tags)
+
+    def _app_generate_metrics_event(self, series_queue):
+        payload = {
+            "namespace": "tracers",
+            "lib_language": "python",
+            "lib_version": get_version(),
+            "series": [s.to_dict() for s in series_queue],
+        }
+
+        self.add_event(payload, "app-generate-metrics")
 
     def add_event(self, payload, payload_type):
         # type: (Dict, str) -> None
